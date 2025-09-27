@@ -3,6 +3,7 @@ from PIL import Image, UnidentifiedImageError
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import pandas as pd
+import time
 from ultralytics import YOLO
 from pydantic import BaseModel
 from typing import Optional
@@ -140,7 +141,7 @@ async def match1(work: ImageEmbedding) -> Match:
     #Calculate
     results = cosineSimilarity(work.Embedding, library, 1).iloc[0]
 
-    return Match(id=results["id"], name=results["name"], score=results["score"])
+    return Match(id=results["id"], name=results["name"], score=results["sim"])
 
 #Matching Function
 @app.post("/match5")
@@ -152,10 +153,95 @@ async def match1(work: ImageEmbedding) -> list[Match]:
     Matches = []
 
     for index, row in results.iterrows():
-        Matches.append(Match(id=row["id"], name=row["name"], score=row["score"]))
+        Matches.append(Match(id=row["id"], name=row["name"], score=row["sim"]))
 
     return Matches
 
+#-------------------------------------------------------------------------
+# END POINT TO DO EVERYTHING
+#-------------------------------------------------------------------------
 
+#Pipeline Validation Model
+class PipelineReturn(BaseModel):
+    Frame: B64String
+    Cropped_Card: Optional[B64String]
+    Card_Detected: bool
+    Matches: Optional[list[Match]]
+    Duration: float
 
+#Detection function
+@app.post("/pipeline")
+async def InferencePipeline(frame: UploadFile = File(...)) -> PipelineReturn:
 
+    #===================================================================================
+    #Detection Logic
+
+    content = await frame.read()
+
+    start_time = time.time()
+
+    try:
+        img = Image.open(io.BytesIO(content)).convert("RGB")
+    except UnidentifiedImageError:
+        return {"Error" : "Invalid Image Error"}
+
+    frame_cv = np.array(img.copy())[:, :, ::-1].copy()   # RGB -> BGR and read / write privledges
+
+    results = det_model.predict(source=frame_cv, conf=0.5, verbose=False)
+
+    crop_resized = None
+
+    #Consider only the first card detected
+    result = results[0]
+
+    #Quit if nothing detected
+    if result is None:
+        return PipelineReturn(Frame=B64String(b64_string=base64_encode(frame_cv)), 
+                              Cropped_Card = None, Card_Detected=False, Matches=None)
+
+    for box in result.boxes:
+
+        # Bounding box coordinates
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        # Confidence and class
+        conf = float(box.conf[0])
+        cls = int(box.cls[0])
+        label = f"{det_model.names[cls]} {conf:.2f}"
+
+        # Draw box and label
+        cv2.rectangle(frame_cv, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(frame_cv, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        #Crop the image to the card and resize
+        cropped = frame_cv[y1:y2, x1:x2]
+        crop_resized = cv2.resize(cropped, (245, 340), interpolation=cv2.INTER_CUBIC)
+
+    #===================================================================================
+    #Encoding Logic
+
+    inference_img = Image.fromarray(cv2.cvtColor(crop_resized, cv2.COLOR_BGR2RGB))
+    
+    emb = encode_model.encode(inference_img)
+
+    #===================================================================================
+    #Matching Logic
+
+    results = cosineSimilarity(emb, library, 5)
+    
+    Matches = []
+
+    for index, row in results.iterrows():
+        Matches.append(Match(id=row["id"], name=row["name"], score=row["sim"]))
+
+    #===================================================================================
+    #Return
+
+    return_time = time.time() - start_time
+
+    return PipelineReturn(
+                Frame = B64String(b64_string=base64_encode(frame_cv)),
+                Cropped_Card = B64String(b64_string=base64_encode(crop_resized)) if crop_resized is not None else None,
+                Card_Detected = crop_resized is not None,
+                Matches = Matches if len(Matches) > 0 else None,
+                Duration = return_time
+            )
