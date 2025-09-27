@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Request
 from PIL import Image, UnidentifiedImageError
 from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 import pandas as pd
 from ultralytics import YOLO
 from pydantic import BaseModel
@@ -17,7 +18,7 @@ import io
 app = FastAPI()
 
 det_model = YOLO("card_detection.pt")
-encode_model = SentenceTransformer("clip-ViT-L-14-LOCAL-CLONE-9-25-2025")
+encode_model = SentenceTransformer("clip-ViT-L-14")
 library = pd.read_parquet("ex2_card_data.parquet")
 
 #-------------------------------------------------------------------------
@@ -117,17 +118,43 @@ async def encodeCard(b64_string: B64String) -> ImageEmbedding:
 
 #Validation model for a match
 class Match(BaseModel):
-	id: str #Card ID
-	score: float #Cosine similarity
+    id: str #Card ID
+    name: str # Card Name
+    score: float #Cosine similarity
+    
+#Cosine Similarity function
+def cosineSimilarity(input, reference_library, top = 1):
+    
+    input = input.reshape(1, -1)
+
+    reference_library["sim"] = reference_library["embedding"].apply(
+        lambda v: cosine_similarity(input, v.reshape(1, -1))
+    )
+
+    return reference_library.sort_values(by="sim", ascending=False).head(top)
 
 #Matching Function
 @app.post("/match1")
-async def match1(work: ImageEmbedding) -> dict:
+async def match1(work: ImageEmbedding) -> Match:
 
-    #Find Match from library
+    #Calculate
+    results = cosineSimilarity(work.Embedding, library, 1).iloc[0]
 
+    return Match(id=results["id"], name=results["name"], score=results["score"])
 
-    return Match(id="test", score=0)
+#Matching Function
+@app.post("/match5")
+async def match1(work: ImageEmbedding) -> list[Match]:
+
+    #Calculate
+    results = cosineSimilarity(work.Embedding, library, 5)
+
+    Matches = []
+
+    for index, row in results.iterrows():
+        Matches.append(Match(id=row["id"], name=row["name"], score=row["score"]))
+
+    return Matches
 
 
 
