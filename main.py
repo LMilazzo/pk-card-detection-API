@@ -20,7 +20,8 @@ app = FastAPI()
 
 det_model = YOLO("card_detection.pt")
 encode_model = SentenceTransformer("clip-ViT-L-14")
-library = pd.read_parquet("ex2_card_data.parquet")
+library = pd.read_parquet("MASTER_SET.parquet")
+embedding_matrix_library = np.vstack(library["embedding"].values)
 
 #-------------------------------------------------------------------------
 
@@ -124,15 +125,14 @@ class Match(BaseModel):
     score: float #Cosine similarity
     
 #Cosine Similarity function
-def cosineSimilarity(input, reference_library, top = 1):
+def cosineSimilarity(input, reference_library, top = 1, embeddings_matrix = embedding_matrix_library):
     
-    input = input.reshape(1, -1)
-
-    reference_library["sim"] = reference_library["embedding"].apply(
-        lambda v: cosine_similarity(input, v.reshape(1, -1))
-    )
-
-    return reference_library.sort_values(by="sim", ascending=False).head(top)
+    sims = cosine_similarity(input.reshape(1, -1), embeddings_matrix)[0]
+    top_indices = sims.argsort()[::-1][:top]
+    top_df = reference_library.iloc[top_indices].copy()
+    top_df["sim"] = sims[top_indices]
+    
+    return top_df
 
 #Matching Function
 @app.post("/match1")
