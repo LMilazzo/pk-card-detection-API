@@ -40,6 +40,11 @@ copy over model pt with:
 
 ssh
 
+sudo apt install git-lfs
+
+git lfs pull
+
 uvicorn main:app
+
 
 
